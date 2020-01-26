@@ -4,11 +4,112 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"reflect"
 	"sort"
 
-	"github.com/shurcooL/graphql/ident"
+	"github.com/arvata-io/graphql/ident"
 )
+
+type RequestHandlerFunc func(req *http.Request)
+
+type Operation interface {
+	Query() string
+	Variables() map[string]interface{}
+	ResponsePtr() interface{}
+
+	ModifyRequest(req *http.Request)
+}
+
+type Query struct {
+	Data interface{}
+	Vars map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func NewQuery(data interface{}, vars map[string]interface{}) *Query {
+	return &Query{
+		Data: data,
+		Vars: vars,
+	}
+}
+
+func (op *Query) Query() string {
+	return constructQuery(op.Data, op.Vars)
+}
+
+func (op *Query) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Query) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
+}
+
+func (op *Query) ResponsePtr() interface{} {
+	return op.Data
+}
+
+type Mutation struct {
+	Data interface{}
+	Vars map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func NewMutation(data interface{}, vars map[string]interface{}) *Mutation {
+	return &Mutation{
+		Data: data,
+		Vars: vars,
+	}
+}
+
+func (op *Mutation) Query() string {
+	return constructMutation(op.Data, op.Vars)
+}
+
+func (op *Mutation) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Mutation) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
+}
+
+func (op *Mutation) ResponsePtr() interface{} {
+	return op.Data
+}
+
+type Static struct {
+	QueryStr string
+	Into     interface{}
+	Vars     map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func (op *Static) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Static) Query() string {
+	return op.QueryStr
+}
+
+func (op *Static) ResponsePtr() interface{} {
+	return op.Into
+}
+
+func (op *Static) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
+}
 
 func constructQuery(v interface{}, variables map[string]interface{}) string {
 	query := query(v)
