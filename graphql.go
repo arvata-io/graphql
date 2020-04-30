@@ -34,38 +34,53 @@ func NewClient(url string, httpClient *http.Client) *Client {
 // with a query derived from q, populating the response into it.
 // q should be a pointer to struct that corresponds to the GraphQL schema.
 func (c *Client) Query(ctx context.Context, q interface{}, variables map[string]interface{}) error {
-	return c.do(ctx, queryOperation, q, variables)
+	return c.Run(ctx, &Query{
+		Data: q,
+		Vars: variables,
+	})
 }
 
 // Mutate executes a single GraphQL mutation request,
 // with a mutation derived from m, populating the response into it.
 // m should be a pointer to struct that corresponds to the GraphQL schema.
 func (c *Client) Mutate(ctx context.Context, m interface{}, variables map[string]interface{}) error {
-	return c.do(ctx, mutationOperation, m, variables)
+	return c.Run(ctx, &Mutation{
+		Data: m,
+		Vars: variables,
+	})
+}
+
+type request struct {
+	Query         string                 `json:"query"`
+	Variables     map[string]interface{} `json:"variables,omitempty"`
+	OperationName string                 `json:"operationName,omitempty"`
+}
+
+type response struct {
+	Data   *json.RawMessage
+	Errors errors
+	//Extensions interface{} // Unused.
 }
 
 // do executes a single GraphQL operation.
-func (c *Client) do(ctx context.Context, op operationType, v interface{}, variables map[string]interface{}) error {
-	var query string
-	switch op {
-	case queryOperation:
-		query = constructQuery(v, variables)
-	case mutationOperation:
-		query = constructMutation(v, variables)
-	}
-	in := struct {
-		Query     string                 `json:"query"`
-		Variables map[string]interface{} `json:"variables,omitempty"`
-	}{
-		Query:     query,
-		Variables: variables,
+func (c *Client) Run(ctx context.Context, op Operation) error {
+	in := request{
+		Query:         op.Query(),
+		Variables:     op.Variables(),
+		OperationName: op.OperationName(),
 	}
 	var buf bytes.Buffer
 	err := json.NewEncoder(&buf).Encode(in)
 	if err != nil {
 		return err
 	}
-	resp, err := ctxhttp.Post(ctx, c.httpClient, c.url, "application/json", &buf)
+	req, err := http.NewRequest(http.MethodPost, c.url, &buf)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	op.ModifyRequest(req)
+	resp, err := ctxhttp.Do(ctx, c.httpClient, req)
 	if err != nil {
 		return err
 	}
@@ -74,18 +89,14 @@ func (c *Client) do(ctx context.Context, op operationType, v interface{}, variab
 		body, _ := ioutil.ReadAll(resp.Body)
 		return fmt.Errorf("non-200 OK status code: %v body: %q", resp.Status, body)
 	}
-	var out struct {
-		Data   *json.RawMessage
-		Errors errors
-		//Extensions interface{} // Unused.
-	}
+	var out response
 	err = json.NewDecoder(resp.Body).Decode(&out)
 	if err != nil {
 		// TODO: Consider including response body in returned error, if deemed helpful.
 		return err
 	}
 	if out.Data != nil {
-		err := jsonutil.UnmarshalGraphQL(*out.Data, v)
+		err := jsonutil.UnmarshalGraphQL(*out.Data, op.ResponsePtr())
 		if err != nil {
 			// TODO: Consider including response body in returned error, if deemed helpful.
 			return err
@@ -113,11 +124,3 @@ type errors []struct {
 func (e errors) Error() string {
 	return e[0].Message
 }
-
-type operationType uint8
-
-const (
-	queryOperation operationType = iota
-	mutationOperation
-	//subscriptionOperation // Unused.
-)

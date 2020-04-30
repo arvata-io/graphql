@@ -4,26 +4,153 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"net/http"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/shurcooL/graphql/ident"
 )
 
-func constructQuery(v interface{}, variables map[string]interface{}) string {
-	query := query(v)
-	if len(variables) > 0 {
-		return "query(" + queryArguments(variables) + ")" + query
-	}
-	return query
+type RequestHandlerFunc func(req *http.Request)
+
+type Operation interface {
+	Query() string
+	Variables() map[string]interface{}
+	ResponsePtr() interface{}
+
+	// This will become the `operationName` in the body of the GraphQL request.
+	// Since the `operationName` is only required if more than one operation is sent,
+	// the tendency should be to return an empty string when there is only one operation in the query.
+	OperationName() string
+
+	ModifyRequest(req *http.Request)
 }
 
-func constructMutation(v interface{}, variables map[string]interface{}) string {
-	query := query(v)
-	if len(variables) > 0 {
-		return "mutation(" + queryArguments(variables) + ")" + query
+type Query struct {
+	Name string
+	Data interface{}
+	Vars map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func (op *Query) Query() string {
+	var str strings.Builder
+
+	if op.Name != "" {
+		str.WriteString("query ")
+		str.WriteString(op.Name)
 	}
-	return "mutation" + query
+
+	if len(op.Vars) > 0 {
+		if str.Len() == 0 {
+			str.WriteString("query")
+		}
+		str.WriteString("(")
+		str.WriteString(queryArguments(op.Vars))
+		str.WriteString(")")
+	}
+
+	str.WriteString(query(op.Data))
+
+	return str.String()
+}
+
+func (op *Query) OperationName() string {
+	return "" // we embed the name in the query, not in the request
+}
+
+func (op *Query) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Query) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
+}
+
+func (op *Query) ResponsePtr() interface{} {
+	return op.Data
+}
+
+type Mutation struct {
+	Name string
+	Data interface{}
+	Vars map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func (op *Mutation) Query() string {
+	var str strings.Builder
+
+	str.WriteString("mutation")
+
+	if op.Name != "" {
+		str.WriteString(" ")
+		str.WriteString(op.Name)
+	}
+
+	if len(op.Vars) > 0 {
+		str.WriteString("(")
+		str.WriteString(queryArguments(op.Vars))
+		str.WriteString(")")
+	}
+
+	str.WriteString(query(op.Data))
+
+	return str.String()
+}
+
+func (op *Mutation) OperationName() string {
+	return "" // we embed the name in the query, not in the request
+}
+
+func (op *Mutation) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Mutation) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
+}
+
+func (op *Mutation) ResponsePtr() interface{} {
+	return op.Data
+}
+
+type Static struct {
+	Name     string
+	QueryStr string
+	Into     interface{}
+	Vars     map[string]interface{}
+
+	RequestHandler RequestHandlerFunc
+}
+
+func (op *Static) Query() string {
+	return op.QueryStr
+}
+
+func (op *Static) OperationName() string {
+	return op.Name
+}
+
+func (op *Static) Variables() map[string]interface{} {
+	return op.Vars
+}
+
+func (op *Static) ResponsePtr() interface{} {
+	return op.Into
+}
+
+func (op *Static) ModifyRequest(req *http.Request) {
+	if op.RequestHandler != nil {
+		op.RequestHandler(req)
+	}
 }
 
 // queryArguments constructs a minified arguments string for variables.
